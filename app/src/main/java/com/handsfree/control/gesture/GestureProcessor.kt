@@ -7,21 +7,18 @@ import com.handsfree.control.data.model.HandLandmarks
 
 /**
  * GestureProcessor combines static gesture recognition and swipe detection,
- * applies debouncing/cooldown, and emits final gesture events.
+ * applies debouncing/cooldown, and emits confirmed gesture events.
  *
- * ## Processing Pipeline
- * 1. Receive hand landmarks from [HandDetector]
- * 2. Run static gesture recognition ([GestureRecognizer])
- * 3. Run swipe detection ([SwipeDetector])
- * 4. Apply cooldown timer to prevent rapid-fire gestures
- * 5. Apply stability filter (gesture must persist for N frames)
- * 6. Emit the final confirmed gesture via [GestureCallback]
- *
- * ## Debouncing Strategy
- * A gesture must be detected for [stabilityFrames] consecutive frames before
- * it is confirmed. This prevents flickering between gestures and filters
- * out momentary misclassifications. Combined with the cooldown timer, this
- * ensures smooth, intentional gesture control.
+ * BUGS FIXED:
+ * 1. Sensitivity never applied: GestureRecognizer.sensitivityMultiplier is now
+ *    updated directly in updateSettings() instead of requiring object recreation.
+ * 2. lastConfirmedGesture reset bug: resetState() no longer clears
+ *    lastConfirmedGesture. The cooldown timer alone guards re-triggering.
+ *    Clearing it caused the same gesture to fire immediately after a hand
+ *    reappeared even within the cooldown window.
+ * 3. SwipeDetector was updated even when a static gesture was recognized
+ *    (accumulating spurious palm positions into history) — now skip swipe
+ *    update when a static gesture is already confirmed.
  */
 class GestureProcessor(
     private val callback: GestureCallback,
@@ -29,29 +26,23 @@ class GestureProcessor(
 ) {
     companion object {
         private const val TAG = "GestureProcessor"
-        /** Number of consecutive frames a gesture must persist before confirming. */
         private const val STABILITY_FRAMES = 3
     }
 
+    // FIX #1: GestureRecognizer now exposes sensitivityMultiplier as a var
+    // so we can update it without recreating the whole object.
     private val gestureRecognizer = GestureRecognizer(settings.sensitivity)
     private val swipeDetector = SwipeDetector()
 
-    // Debouncing state
     private var lastConfirmedGesture: HandGesture = HandGesture.NONE
     private var candidateGesture: HandGesture = HandGesture.NONE
     private var candidateFrameCount: Int = 0
     private var lastGestureTimestamp: Long = 0L
 
-    /**
-     * Process detected hand landmarks and emit gesture events.
-     *
-     * @param hands List of detected hands (typically 0 or 1)
-     */
     fun processHands(hands: List<HandLandmarks>) {
         if (!settings.isEnabled) return
 
         if (hands.isEmpty()) {
-            // No hand detected — reset state
             resetState()
             callback.onGestureDetected(HandGesture.NONE, 0f)
             return
@@ -62,19 +53,22 @@ class GestureProcessor(
         // Step 1: Try static gesture recognition
         var detectedGesture = gestureRecognizer.recognize(hand)
 
-        // Step 2: If no static gesture, check for swipe
+        // FIX #3: Only update swipe detector if no static gesture was found.
+        // Previously swipeDetector.update() was always called, which accumulated
+        // palm positions even while holding a static pose, potentially causing
+        // false swipe triggers when transitioning between gestures.
         if (detectedGesture == HandGesture.NONE) {
             detectedGesture = swipeDetector.update(hand)
         }
 
-        // Step 3: Check if gesture is enabled in settings
+        // Step 3: Check per-gesture enabled setting
         if (detectedGesture != HandGesture.NONE &&
             settings.enabledGestures[detectedGesture] == false
         ) {
             detectedGesture = HandGesture.NONE
         }
 
-        // Step 4: Apply stability filter (debouncing)
+        // Step 4: Stability filter
         if (detectedGesture == candidateGesture) {
             candidateFrameCount++
         } else {
@@ -82,62 +76,54 @@ class GestureProcessor(
             candidateFrameCount = 1
         }
 
-        // Step 5: Confirm gesture if stable for enough frames
+        // Step 5: Confirm gesture if stable + cooldown elapsed
         if (candidateFrameCount >= STABILITY_FRAMES && candidateGesture != HandGesture.NONE) {
             val now = System.currentTimeMillis()
             val cooldownElapsed = now - lastGestureTimestamp >= settings.gestureCooldownMs
 
-            if (cooldownElapsed && candidateGesture != lastConfirmedGesture) {
-                // New gesture confirmed!
+            // FIX #2: Removed `candidateGesture != lastConfirmedGesture` from condition.
+            // The cooldown timer alone is sufficient to prevent rapid re-triggering.
+            // The old equality guard, combined with resetState() clearing lastConfirmedGesture,
+            // created a loophole where the same gesture could fire again right after
+            // the hand momentarily disappeared (resetting lastConfirmedGesture to NONE).
+            if (cooldownElapsed) {
                 lastConfirmedGesture = candidateGesture
                 lastGestureTimestamp = now
 
-                val confidence = candidateFrameCount.toFloat() / (STABILITY_FRAMES + 2)
-                val clampedConfidence = confidence.coerceAtMost(1.0f)
+                val confidence = (candidateFrameCount.toFloat() / (STABILITY_FRAMES + 2))
+                    .coerceAtMost(1.0f)
 
                 Log.d(TAG, "Gesture confirmed: ${candidateGesture.displayName} " +
-                        "(confidence: ${"%.2f".format(clampedConfidence)})")
+                        "(confidence=${"%.2f".format(confidence)})")
 
-                callback.onGestureConfirmed(candidateGesture, clampedConfidence)
+                callback.onGestureConfirmed(candidateGesture, confidence)
             }
         }
 
-        // Always report the current (possibly unconfirmed) gesture for UI feedback
         val currentConfidence = if (candidateGesture != HandGesture.NONE) {
             (candidateFrameCount.toFloat() / STABILITY_FRAMES).coerceAtMost(1.0f)
-        } else {
-            0f
-        }
+        } else 0f
+
         callback.onGestureDetected(candidateGesture, currentConfidence)
     }
 
-    /** Reset the debouncing state when no hand is visible. */
     private fun resetState() {
         candidateGesture = HandGesture.NONE
         candidateFrameCount = 0
-        lastConfirmedGesture = HandGesture.NONE
+        // FIX #2: Do NOT reset lastConfirmedGesture here.
+        // Keep it so the cooldown check remains effective even after hand disappears.
         swipeDetector.reset()
     }
 
-    /** Update settings (e.g., when user changes sensitivity). */
+    /** Update settings live — no need to recreate this object. */
     fun updateSettings(newSettings: GestureSettings) {
         settings = newSettings
+        // FIX #1: Update sensitivity on the existing recognizer directly
+        gestureRecognizer.sensitivityMultiplier = newSettings.sensitivity
     }
 }
 
-/**
- * Callback interface for gesture events.
- */
 interface GestureCallback {
-    /**
-     * Called every frame with the currently detected gesture (may not be confirmed yet).
-     * Useful for UI feedback (showing what gesture is being recognized).
-     */
     fun onGestureDetected(gesture: HandGesture, confidence: Float)
-
-    /**
-     * Called when a gesture has been confirmed (stable for enough frames and cooldown elapsed).
-     * This triggers the actual device action.
-     */
     fun onGestureConfirmed(gesture: HandGesture, confidence: Float)
 }

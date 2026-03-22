@@ -20,22 +20,23 @@ import com.handsfree.control.data.model.Handedness
  * HandDetector wraps MediaPipe's HandLandmarker to detect 21 hand landmarks
  * from each camera frame.
  *
- * ## How it works
- * 1. CameraX delivers each frame as an [ImageProxy] in RGBA_8888 format.
- * 2. The frame is converted to a [Bitmap] and horizontally flipped (front camera is mirrored).
- * 3. The bitmap is wrapped in a MediaPipe [MPImage] and fed to [HandLandmarker.detectForVideo].
- * 4. Results (0 or more detected hands with 21 landmarks each) are converted to our
- *    [HandLandmarks] model and delivered via the [HandDetectionListener] callback.
- *
- * ## Performance
- * - Uses GPU delegate for hardware-accelerated inference when available.
- * - LIVE_STREAM running mode processes frames asynchronously.
- * - Only one hand is detected to minimize compute (configurable).
- * - Uses STRATEGY_KEEP_ONLY_LATEST in the camera so old frames are dropped.
+ * BUGS FIXED:
+ * 1. Timestamp: was dividing by 1_000 (giving microseconds); MediaPipe VIDEO
+ *    mode expects milliseconds → now divides by 1_000_000.
+ * 2. Row stride: imageProxyToBitmap now accounts for row padding bytes that
+ *    camera buffers include, preventing distorted images.
+ * 3. Bitmap leak: bitmap recycle moved to finally block so it always runs
+ *    even if listener.onHandsDetected() throws.
+ * 4. Thread safety: handLandmarker marked @Volatile so close() on main thread
+ *    and analyze() on background thread can't race.
+ * 5. Image rotation: rotationDegrees from imageProxy now applied to the bitmap
+ *    so landmarks are correctly oriented on all devices.
+ * 6. Silent failure: user-facing error reported via listener when model is missing.
  */
 class HandDetector(
     private val context: Context,
-    private val listener: HandDetectionListener
+    private val listener: HandDetectionListener,
+    private val errorListener: HandDetectorErrorListener? = null
 ) : FrameAnalyzer {
 
     companion object {
@@ -47,43 +48,39 @@ class HandDetector(
         private const val MIN_PRESENCE_CONFIDENCE = 0.5f
     }
 
+    // FIX #4: @Volatile ensures changes in close() (main thread) are immediately
+    // visible in analyze() (background thread), preventing TOCTOU race conditions.
+    @Volatile
     private var handLandmarker: HandLandmarker? = null
+
+    // FIX #6: track whether initialisation failed to report it once
+    @Volatile
+    private var initFailed = false
 
     init {
         setupHandLandmarker()
     }
 
-    /**
-     * Initialize MediaPipe HandLandmarker with optimal settings.
-     *
-     * The model file (hand_landmarker.task) must be placed in the app's
-     * assets folder. It is a bundled TFLite model provided by Google.
-     */
     private fun setupHandLandmarker() {
+        // FIX #9: Verify model file exists in assets before attempting to load
         try {
-            val baseOptions = BaseOptions.builder()
-                .setModelAssetPath(MODEL_ASSET)
-                .setDelegate(Delegate.GPU)  // Use GPU for faster inference
-                .build()
+            context.assets.open(MODEL_ASSET).close()
+        } catch (e: Exception) {
+            val msg = "hand_landmarker.task not found in assets. " +
+                    "Download it from: https://storage.googleapis.com/mediapipe-models/" +
+                    "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
+            Log.e(TAG, msg)
+            errorListener?.onError(msg)
+            initFailed = true
+            return
+        }
 
-            val options = HandLandmarker.HandLandmarkerOptions.builder()
-                .setBaseOptions(baseOptions)
-                .setRunningMode(RunningMode.VIDEO)
-                .setNumHands(MAX_HANDS)
-                .setMinHandDetectionConfidence(MIN_DETECTION_CONFIDENCE)
-                .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setMinHandPresenceConfidence(MIN_PRESENCE_CONFIDENCE)
-                .build()
-
-            handLandmarker = HandLandmarker.createFromOptions(context, options)
-            Log.d(TAG, "HandLandmarker initialized successfully with GPU delegate")
-        } catch (gpuError: Exception) {
-            // Fallback to CPU if GPU is unavailable
-            Log.w(TAG, "GPU delegate failed, falling back to CPU", gpuError)
+        // Try GPU first, fall back to CPU
+        for (delegate in listOf(Delegate.GPU, Delegate.CPU)) {
             try {
                 val baseOptions = BaseOptions.builder()
                     .setModelAssetPath(MODEL_ASSET)
-                    .setDelegate(Delegate.CPU)
+                    .setDelegate(delegate)
                     .build()
 
                 val options = HandLandmarker.HandLandmarkerOptions.builder()
@@ -96,107 +93,136 @@ class HandDetector(
                     .build()
 
                 handLandmarker = HandLandmarker.createFromOptions(context, options)
-                Log.d(TAG, "HandLandmarker initialized with CPU delegate")
-            } catch (cpuError: Exception) {
-                Log.e(TAG, "Failed to initialize HandLandmarker", cpuError)
+                Log.d(TAG, "HandLandmarker initialized with $delegate delegate")
+                return // success — stop trying
+            } catch (e: Exception) {
+                Log.w(TAG, "$delegate delegate failed, trying next option", e)
             }
         }
+
+        // Both GPU and CPU failed
+        val msg = "Failed to initialize HandLandmarker on both GPU and CPU"
+        Log.e(TAG, msg)
+        errorListener?.onError(msg)
+        initFailed = true
     }
 
-    /**
-     * Process a camera frame: convert to Bitmap, run hand detection,
-     * and deliver results.
-     *
-     * Called on the analysis background thread.
-     */
     override fun analyze(imageProxy: ImageProxy) {
+        // FIX #4: Read volatile once so we have a stable reference for this frame
         val landmarker = handLandmarker
         if (landmarker == null) {
             imageProxy.close()
             return
         }
 
-        val timestampMs = imageProxy.imageInfo.timestamp / 1_000 // Convert nanos to micros
+        // FIX #1: ImageProxy timestamp is in NANOSECONDS.
+        // MediaPipe VIDEO mode detectForVideo() expects MILLISECONDS.
+        // Previous code divided by 1_000 giving microseconds — 1000x too large.
+        val timestampMs = imageProxy.imageInfo.timestamp / 1_000_000L
+
+        var bitmap: Bitmap? = null
+        var processedBitmap: Bitmap? = null
 
         try {
-            // Convert ImageProxy to Bitmap
-            val bitmap = imageProxyToBitmap(imageProxy)
+            // FIX #2: Convert ImageProxy to Bitmap correctly accounting for row stride
+            bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap == null) {
-                imageProxy.close()
                 return
             }
 
-            // Mirror the bitmap horizontally (front camera compensation)
-            val mirroredBitmap = mirrorBitmap(bitmap)
+            // FIX #5: Apply rotation AND mirror correction in a single matrix operation
+            processedBitmap = applyTransformations(
+                source = bitmap,
+                rotationDegrees = imageProxy.imageInfo.rotationDegrees
+            )
 
-            // Wrap in MediaPipe image format
-            val mpImage = BitmapImageBuilder(mirroredBitmap).build()
+            val mpImage = BitmapImageBuilder(processedBitmap).build()
 
-            // Run hand landmark detection
             val result: HandLandmarkerResult = landmarker.detectForVideo(
                 mpImage,
                 timestampMs
             )
 
-            // Convert MediaPipe results to our domain model
-            val detectedHands = convertResults(result)
+            listener.onHandsDetected(convertResults(result))
 
-            // Deliver results on the calling thread (background)
-            listener.onHandsDetected(detectedHands)
-
-            // Clean up bitmaps
-            bitmap.recycle()
-            mirroredBitmap.recycle()
         } catch (e: Exception) {
             Log.e(TAG, "Error during hand detection", e)
         } finally {
-            // CRITICAL: Always close the ImageProxy to free the buffer
+            // FIX #3: Always recycle bitmaps AND always close ImageProxy,
+            // even if the listener throws or detection fails.
+            bitmap?.recycle()
+            processedBitmap?.recycle()
             imageProxy.close()
         }
     }
 
     /**
-     * Convert an ImageProxy (RGBA_8888) to a Bitmap.
+     * Convert ImageProxy (RGBA_8888) to Bitmap, correctly handling row stride.
+     *
+     * FIX #2 DETAIL: Camera hardware often adds padding bytes at the end of each
+     * row (rowStride >= width * pixelStride). If we naively read all buffer bytes
+     * into a bitmap, the padding bytes shift every row right, producing a
+     * diagonally sheared/distorted image. We must skip padding per row.
      */
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
-        val buffer = imageProxy.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
+        val plane = imageProxy.planes[0]
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride    // bytes per pixel (4 for RGBA_8888)
+        val rowStride = plane.rowStride        // bytes per row (may include padding)
+        val rowPadding = rowStride - pixelStride * imageProxy.width
 
+        // Create bitmap wide enough to hold one row including padding,
+        // then crop to actual width
         val bitmap = Bitmap.createBitmap(
-            imageProxy.width,
+            imageProxy.width + rowPadding / pixelStride,
             imageProxy.height,
             Bitmap.Config.ARGB_8888
         )
-        bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(bytes))
-        return bitmap
+        bitmap.copyPixelsFromBuffer(buffer)
+
+        // Crop away the row-padding columns on the right
+        return if (rowPadding > 0) {
+            val cropped = Bitmap.createBitmap(bitmap, 0, 0, imageProxy.width, imageProxy.height)
+            bitmap.recycle()
+            cropped
+        } else {
+            bitmap
+        }
     }
 
     /**
-     * Mirror a bitmap horizontally to compensate for front camera mirroring.
-     * This ensures gestures appear natural (left is left, right is right).
+     * Apply rotation correction and front-camera horizontal mirror in one pass.
+     *
+     * FIX #5 DETAIL: Front camera frames need two transforms:
+     * 1. Rotation by imageInfo.rotationDegrees to match screen orientation.
+     * 2. Horizontal flip to un-mirror the front camera feed, so that
+     *    right hand = right side of image.
+     *
+     * Combining both into a single Matrix avoids creating an intermediate bitmap.
      */
-    private fun mirrorBitmap(source: Bitmap): Bitmap {
+    private fun applyTransformations(source: Bitmap, rotationDegrees: Int): Bitmap {
         val matrix = Matrix().apply {
-            preScale(-1f, 1f)
+            // Apply rotation first
+            if (rotationDegrees != 0) {
+                postRotate(rotationDegrees.toFloat())
+            }
+            // Then mirror horizontally for front camera
+            postScale(-1f, 1f, source.width / 2f, source.height / 2f)
         }
         return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
     }
 
-    /**
-     * Convert MediaPipe HandLandmarkerResult to our [HandLandmarks] model.
-     *
-     * MediaPipe returns landmarks as NormalizedLandmark with x, y, z values
-     * where x and y are normalized to [0.0, 1.0] relative to image dimensions,
-     * and z represents depth relative to the wrist.
-     */
     private fun convertResults(result: HandLandmarkerResult): List<HandLandmarks> {
         val hands = mutableListOf<HandLandmarks>()
 
         for (i in result.landmarks().indices) {
             val mpLandmarks = result.landmarks()[i]
 
-            // Convert each of the 21 landmarks
+            if (mpLandmarks.size < 21) {
+                Log.w(TAG, "Incomplete landmarks: only ${mpLandmarks.size}/21 points")
+                continue
+            }
+
             val points = mpLandmarks.map { landmark ->
                 HandLandmarkPoint(
                     x = landmark.x(),
@@ -205,8 +231,8 @@ class HandDetector(
                 )
             }
 
-            // Determine handedness (left or right)
             val handedness = if (result.handednesses().isNotEmpty() &&
+                i < result.handednesses().size &&
                 result.handednesses()[i].isNotEmpty()
             ) {
                 val label = result.handednesses()[i][0].categoryName()
@@ -228,10 +254,18 @@ class HandDetector(
         return hands
     }
 
-    /** Release MediaPipe resources. */
+    /** Release MediaPipe resources. Safe to call from any thread. */
     fun close() {
-        handLandmarker?.close()
+        // FIX #4: Volatile write + null before close() prevents analyze() from using
+        // a partially-destroyed landmarker
+        val lm = handLandmarker
         handLandmarker = null
+        lm?.close()
         Log.d(TAG, "HandLandmarker released")
     }
+}
+
+/** Reports non-recoverable errors during hand detection setup or inference. */
+fun interface HandDetectorErrorListener {
+    fun onError(message: String)
 }

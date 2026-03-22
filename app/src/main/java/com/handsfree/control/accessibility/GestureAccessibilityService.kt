@@ -110,6 +110,10 @@ class GestureAccessibilityService : AccessibilityService() {
      * @param action The action to perform
      */
     fun executeAction(action: DeviceAction) {
+        // FIX #11: Refresh screen dimensions before every action to handle
+        // foldables, split-screen, and orientation changes correctly.
+        updateScreenDimensions()
+
         when (action) {
             is DeviceAction.ScrollUp -> performScroll(isUp = true, amount = action.amount)
             is DeviceAction.ScrollDown -> performScroll(isUp = false, amount = action.amount)

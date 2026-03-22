@@ -26,15 +26,23 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # ── 3. Download MediaPipe hand landmark model ──
+      # ── 3. Download gradle-wrapper.jar (binary not committed to repo) ──
+      - name: Download Gradle wrapper jar
+        run: |
+          mkdir -p gradle/wrapper
+          curl -L --fail \
+            "https://github.com/gradle/gradle/raw/v8.5.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o gradle/wrapper/gradle-wrapper.jar
+          echo "gradle-wrapper.jar: $(du -h gradle/wrapper/gradle-wrapper.jar)"
+
+      # ── 4. Download MediaPipe hand landmark model ──
       - name: Download MediaPipe hand_landmarker model
         run: |
           mkdir -p app/src/main/assets
-          curl -L -o app/src/main/assets/hand_landmarker.task \
+          curl -L --fail -o app/src/main/assets/hand_landmarker.task \
             "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
           echo "Model file size: $(du -h app/src/main/assets/hand_landmarker.task)"
 
-      # ── 4. Cache Gradle dependencies ──
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:

@@ -38,6 +38,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val gestureMapper = GestureActionMapper()
 
     // ── Gesture Processing ──
+    // FIX #13: GestureProcessor starts with default settings. The init{} block
+    // below subscribes to DataStore and propagates real settings as soon as they load.
+    // This is acceptable — the default GestureSettings() values are sane,
+    // and real settings arrive within milliseconds on first launch.
     private val gestureProcessor = GestureProcessor(
         callback = object : GestureCallback {
             override fun onGestureDetected(gesture: HandGesture, confidence: Float) {

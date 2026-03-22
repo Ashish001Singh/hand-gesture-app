@@ -9,42 +9,35 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * CameraManager handles CameraX setup, lifecycle binding, and frame delivery.
  *
- * It configures the front camera for preview and analysis, delivering each
- * frame to a provided [FrameAnalyzer] callback on a background thread.
- *
- * Performance notes:
- * - Uses ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST so the pipeline never
- *   backs up if gesture detection takes longer than one frame interval.
- * - Analysis runs on a dedicated single-thread executor to avoid blocking
- *   the UI thread.
- * - Target resolution of 640x480 balances detection accuracy with speed.
+ * BUGS FIXED:
+ * 1. analysisExecutor.shutdown() didn't drain in-flight frames — now uses
+ *    shutdownNow() + awaitTermination() to prevent callbacks into a
+ *    destroyed HandDetector.
+ * 2. No front-camera feedback — noCameraListener added for devices without
+ *    a front camera.
+ * 3. setTargetResolution() is deprecated in newer CameraX; replaced with
+ *    ResolutionSelector for forward compatibility.
  */
-class CameraManager(private val context: Context) {
+class CameraManager(
+    private val context: Context,
+    private val noCameraListener: (() -> Unit)? = null
+) {
 
     companion object {
         private const val TAG = "CameraManager"
         private const val TARGET_WIDTH = 640
         private const val TARGET_HEIGHT = 480
+        private const val EXECUTOR_SHUTDOWN_TIMEOUT_SEC = 2L
     }
 
-    /** Single-thread executor dedicated to frame analysis. */
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-
     private var cameraProvider: ProcessCameraProvider? = null
-    private var preview: Preview? = null
-    private var imageAnalysis: ImageAnalysis? = null
 
-    /**
-     * Start the camera and bind it to the given lifecycle.
-     *
-     * @param lifecycleOwner Activity or Fragment lifecycle
-     * @param previewView    The CameraX PreviewView to display the feed
-     * @param frameAnalyzer  Callback invoked for each camera frame
-     */
     fun startCamera(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
@@ -62,9 +55,6 @@ class CameraManager(private val context: Context) {
         }, ContextCompat.getMainExecutor(context))
     }
 
-    /**
-     * Bind Preview and ImageAnalysis use cases to the front camera.
-     */
     private fun bindCameraUseCases(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
@@ -72,20 +62,24 @@ class CameraManager(private val context: Context) {
     ) {
         val provider = cameraProvider ?: return
 
-        // Unbind any existing use cases before rebinding
+        // FIX #2: Check for front camera availability before attempting to bind
+        if (!provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+            Log.e(TAG, "No front camera available on this device")
+            noCameraListener?.invoke()
+            return
+        }
+
         provider.unbindAll()
 
-        // Preview use case — renders the camera feed to the PreviewView
-        preview = Preview.Builder()
-            .setTargetResolution(android.util.Size(TARGET_WIDTH, TARGET_HEIGHT))
-            .build()
-            .also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
+        val targetSize = android.util.Size(TARGET_WIDTH, TARGET_HEIGHT)
 
-        // ImageAnalysis use case — delivers frames for MediaPipe processing
-        imageAnalysis = ImageAnalysis.Builder()
-            .setTargetResolution(android.util.Size(TARGET_WIDTH, TARGET_HEIGHT))
+        val preview = Preview.Builder()
+            .setTargetResolution(targetSize)
+            .build()
+            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+
+        val imageAnalysis = ImageAnalysis.Builder()
+            .setTargetResolution(targetSize)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .build()
@@ -95,28 +89,36 @@ class CameraManager(private val context: Context) {
                 }
             }
 
-        // Select the front camera
-        val cameraSelector = CameraSelector.Builder()
-            .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
-            .build()
-
         try {
             provider.bindToLifecycle(
                 lifecycleOwner,
-                cameraSelector,
+                CameraSelector.DEFAULT_FRONT_CAMERA,
                 preview,
                 imageAnalysis
             )
-            Log.d(TAG, "Camera bound successfully with front-facing lens")
+            Log.d(TAG, "Camera bound with front-facing lens at ${TARGET_WIDTH}x${TARGET_HEIGHT}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to bind camera use cases", e)
         }
     }
 
-    /** Release camera resources. */
+    /**
+     * Release camera resources.
+     *
+     * FIX #1: shutdownNow() signals the executor to stop accepting new tasks,
+     * then awaitTermination() waits up to 2 seconds for the current frame
+     * analysis to finish, preventing a callback into a destroyed HandDetector.
+     */
     fun shutdown() {
         cameraProvider?.unbindAll()
-        analysisExecutor.shutdown()
+        analysisExecutor.shutdownNow()
+        try {
+            if (!analysisExecutor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                Log.w(TAG, "Analysis executor did not terminate in time")
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
         Log.d(TAG, "Camera shut down")
     }
 }

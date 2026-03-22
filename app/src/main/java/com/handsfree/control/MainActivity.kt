@@ -17,26 +17,24 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
 import com.handsfree.control.camera.CameraManager
 import com.handsfree.control.detection.HandDetector
+import com.handsfree.control.detection.HandDetectorErrorListener
 import com.handsfree.control.ui.screens.MainScreen
 import com.handsfree.control.ui.screens.SettingsScreen
 import com.handsfree.control.ui.theme.HandsFreeControlTheme
 import com.handsfree.control.ui.viewmodel.MainViewModel
-import kotlinx.coroutines.launch
 
 /**
- * MainActivity is the entry point of the HandsFree Control app.
+ * MainActivity — app entry point and camera/detection lifecycle owner.
  *
- * It manages:
- * - Camera permission requests
- * - Camera lifecycle (via CameraManager)
- * - Hand detection initialization (via HandDetector)
- * - Navigation between Main and Settings screens
- *
- * The Activity acts as the "glue" that connects the camera feed
- * to the gesture detection pipeline.
+ * BUGS FIXED:
+ * 1. Camera never restarted if permission was granted from system Settings:
+ *    onResume() now checks permission and re-attempts camera start if needed.
+ * 2. HandDetector errors (missing model, GPU+CPU failure) now surfaced to user
+ *    via Toast instead of silently failing.
+ * 3. No front camera feedback: CameraManager.noCameraListener now shows Toast.
+ * 4. lifecycleScope import was unused — removed.
  */
 class MainActivity : ComponentActivity() {
 
@@ -46,7 +44,13 @@ class MainActivity : ComponentActivity() {
     private var handDetector: HandDetector? = null
     private var previewView: PreviewView? = null
 
-    // Camera permission launcher
+    // FIX #2: Error listener to surface detector failures to the user
+    private val detectorErrorListener = HandDetectorErrorListener { message ->
+        runOnUiThread {
+            Toast.makeText(this, "Detection error: $message", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -64,7 +68,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        cameraManager = CameraManager(this)
+        // FIX #3: Pass noCameraListener to surface front-camera absence
+        cameraManager = CameraManager(this) {
+            Toast.makeText(
+                this,
+                "No front camera detected on this device",
+                Toast.LENGTH_LONG
+            ).show()
+        }
 
         setContent {
             HandsFreeControlTheme {
@@ -77,16 +88,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Check camera permission
         checkAndRequestCameraPermission()
     }
 
     @Composable
     private fun AppContent() {
-        // Navigation state
         var showSettings by remember { mutableStateOf(false) }
 
-        // Collect ViewModel state
         val currentGesture by viewModel.currentGesture.collectAsState()
         val gestureConfidence by viewModel.gestureConfidence.collectAsState()
         val isDetectionActive by viewModel.isDetectionActive.collectAsState()
@@ -94,7 +102,6 @@ class MainActivity : ComponentActivity() {
         val handLandmarks by viewModel.handLandmarks.collectAsState()
         val settings by viewModel.settings.collectAsState()
 
-        // Refresh service status periodically
         LaunchedEffect(Unit) {
             while (true) {
                 viewModel.refreshServiceStatus()
@@ -129,30 +136,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Start the camera and hand detection pipeline.
-     *
-     * This connects:
-     * CameraManager → HandDetector (as FrameAnalyzer) → ViewModel (as HandDetectionListener)
-     */
     private fun startCameraAndDetection() {
         val preview = previewView ?: return
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+        if (!hasCameraPermission()) return
 
-        // Initialize hand detector (implements FrameAnalyzer)
         if (handDetector == null) {
             handDetector = HandDetector(
                 context = this,
-                listener = viewModel.handDetectionListener
+                listener = viewModel.handDetectionListener,
+                errorListener = detectorErrorListener  // FIX #2
             )
         }
 
-        // Start camera with the hand detector as the frame analyzer
         cameraManager.startCamera(
             lifecycleOwner = this,
             previewView = preview,
@@ -160,33 +156,34 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun checkAndRequestCameraPermission() {
-        when {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED -> {
-                // Permission already granted — camera will start when preview is ready
-            }
-            else -> {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
-        }
-    }
+    private fun hasCameraPermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
 
-    /**
-     * Open the system Accessibility Settings page.
-     * The user needs to manually enable the HandsFree Control service there.
-     */
-    private fun openAccessibilitySettings() {
-        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
+    private fun checkAndRequestCameraPermission() {
+        if (!hasCameraPermission()) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+        // If already granted, camera starts once previewView is ready via onPreviewCreated
     }
 
     override fun onResume() {
         super.onResume()
-        // Refresh accessibility service status when returning from settings
         viewModel.refreshServiceStatus()
+
+        // FIX #1: Re-attempt camera start when returning from system Settings
+        // where the user may have just granted the camera permission.
+        if (hasCameraPermission() && previewView != null && handDetector == null) {
+            startCameraAndDetection()
+        }
+    }
+
+    private fun openAccessibilitySettings() {
+        startActivity(
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
     }
 
     override fun onDestroy() {
