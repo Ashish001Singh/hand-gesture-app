@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Palm -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,58 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0"/>
+
+    <!-- Thumb -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M32,58 L32,46 Q32,42 36,42 Q40,42 40,46 L40,58 Z"/>
+
+    <!-- Index finger -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,58 L42,32 Q42,28 46,28 Q50,28 50,32 L50,58 Z"/>
+
+    <!-- Middle finger -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M52,58 L52,28 Q52,24 56,24 Q60,24 60,28 L60,58 Z"/>
+
+    <!-- Ring finger -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,58 L62,32 Q62,28 66,28 Q70,28 70,32 L70,58 Z"/>
+
+    <!-- Pinky -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M72,58 L72,40 Q72,36 76,36 Q80,36 80,40 L80,58 Z"/>
+
+</vector>
