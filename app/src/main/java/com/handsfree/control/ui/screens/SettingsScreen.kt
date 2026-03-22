@@ -17,14 +17,6 @@ import com.handsfree.control.data.model.HandGesture
 
 /**
  * Settings screen for gesture customization.
- *
- * Allows users to:
- * - Adjust detection sensitivity
- * - Set confidence threshold
- * - Configure cooldown timing
- * - Toggle individual gestures on/off
- * - Toggle visual overlay
- * - Adjust scroll amount
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,7 +50,6 @@ fun SettingsScreen(
             // ── Detection Settings ──
             Text("Detection", fontWeight = FontWeight.Bold, fontSize = 18.sp)
 
-            // Sensitivity slider
             SettingsSlider(
                 label = "Sensitivity",
                 value = localSettings.sensitivity,
@@ -70,7 +61,6 @@ fun SettingsScreen(
                 }
             )
 
-            // Confidence threshold
             SettingsSlider(
                 label = "Min Confidence",
                 value = localSettings.confidenceThreshold,
@@ -82,7 +72,6 @@ fun SettingsScreen(
                 }
             )
 
-            // Cooldown
             SettingsSlider(
                 label = "Cooldown",
                 value = localSettings.gestureCooldownMs.toFloat(),
@@ -94,7 +83,6 @@ fun SettingsScreen(
                 }
             )
 
-            // Scroll amount
             SettingsSlider(
                 label = "Scroll Amount",
                 value = localSettings.scrollAmount.toFloat(),
@@ -106,7 +94,7 @@ fun SettingsScreen(
                 }
             )
 
-            HorizontalDivider()
+            Divider()
 
             // ── Display Settings ──
             Text("Display", fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -131,7 +119,7 @@ fun SettingsScreen(
                 }
             )
 
-            HorizontalDivider()
+            Divider()
 
             // ── Individual Gesture Toggles ──
             Text("Gestures", fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -189,19 +177,14 @@ private fun SettingsSwitch(
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            Text(
-                description,
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text(description, fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }

@@ -88,7 +88,7 @@ fun GestureStatusBar(
                 )
             }
 
-            // Confidence bar
+            // Confidence bar — use Float overload (compatible with all Material3 versions)
             if (isActive && gesture != HandGesture.NONE) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -100,7 +100,7 @@ fun GestureStatusBar(
                         fontSize = 12.sp
                     )
                     LinearProgressIndicator(
-                        progress = { animatedConfidence },
+                        progress = animatedConfidence,
                         modifier = Modifier
                             .weight(1f)
                             .height(6.dp)

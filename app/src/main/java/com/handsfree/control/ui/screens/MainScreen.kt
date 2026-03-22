@@ -26,11 +26,6 @@ import com.handsfree.control.ui.theme.GestureInactiveColor
 
 /**
  * Main screen of the HandsFree Control app.
- *
- * Layout:
- * - Top: Camera preview with gesture overlay
- * - Middle: Gesture status bar with current detection
- * - Bottom: Control buttons and gesture guide
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,9 +44,7 @@ fun MainScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Text("HandsFree Control", fontWeight = FontWeight.Bold)
-                },
+                title = { Text("HandsFree Control", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -73,9 +66,7 @@ fun MainScreen(
             // ── Accessibility Service Warning ──
             if (!isServiceConnected) {
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.errorContainer
                     )
@@ -85,25 +76,15 @@ fun MainScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(
-                            Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                        Icon(Icons.Default.Warning, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error)
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Accessibility Service Required",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
-                            Text(
-                                "Enable the HandsFree Control service in Accessibility settings to allow gesture control.",
-                                fontSize = 12.sp
-                            )
+                            Text("Accessibility Service Required",
+                                fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text("Enable the HandsFree Control service in Accessibility settings to allow gesture control.",
+                                fontSize = 12.sp)
                         }
-                        TextButton(onClick = onOpenAccessibilitySettings) {
-                            Text("Enable")
-                        }
+                        TextButton(onClick = onOpenAccessibilitySettings) { Text("Enable") }
                     }
                 }
             }
@@ -116,18 +97,12 @@ fun MainScreen(
                     .padding(horizontal = 16.dp)
                     .clip(RoundedCornerShape(16.dp))
             ) {
-                CameraPreview(
-                    onPreviewCreated = onPreviewCreated
-                )
+                CameraPreview(onPreviewCreated = onPreviewCreated)
 
-                // Gesture overlay (landmarks visualization)
                 if (showOverlay && handLandmarks.isNotEmpty()) {
-                    GestureOverlay(
-                        landmarks = handLandmarks
-                    )
+                    GestureOverlay(landmarks = handLandmarks)
                 }
 
-                // Gesture status at the bottom of preview
                 GestureStatusBar(
                     gesture = currentGesture,
                     confidence = gestureConfidence,
@@ -138,29 +113,18 @@ fun MainScreen(
 
             // ── Control Buttons ──
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Toggle detection button
                 Button(
                     onClick = onToggleDetection,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isDetectionActive) {
-                            GestureInactiveColor
-                        } else {
-                            GestureActiveColor
-                        }
+                        containerColor = if (isDetectionActive) GestureInactiveColor else GestureActiveColor
                     )
                 ) {
                     Icon(
-                        imageVector = if (isDetectionActive) {
-                            Icons.Default.PauseCircle
-                        } else {
-                            Icons.Default.PlayCircle
-                        },
+                        imageVector = if (isDetectionActive) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp)
                     )
@@ -171,18 +135,13 @@ fun MainScreen(
                     )
                 }
 
-                // Status indicator
                 OutlinedButton(
                     onClick = { },
                     modifier = Modifier.weight(1f),
                     enabled = false
                 ) {
                     Icon(
-                        imageVector = if (isServiceConnected) {
-                            Icons.Default.CheckCircle
-                        } else {
-                            Icons.Default.Cancel
-                        },
+                        imageVector = if (isServiceConnected) Icons.Default.CheckCircle else Icons.Default.Cancel,
                         contentDescription = null,
                         tint = if (isServiceConnected) GestureActiveColor else GestureInactiveColor,
                         modifier = Modifier.size(20.dp)
@@ -195,15 +154,11 @@ fun MainScreen(
                 }
             }
 
-            // ── Gesture Guide ──
             GestureGuideCard()
         }
     }
 }
 
-/**
- * Card showing all supported gestures and their actions.
- */
 @Composable
 private fun GestureGuideCard() {
     Card(
@@ -219,11 +174,7 @@ private fun GestureGuideCard() {
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                "Gesture Guide",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp
-            )
+            Text("Gesture Guide", fontWeight = FontWeight.Bold, fontSize = 16.sp)
 
             val gestures = HandGesture.entries.filter { it != HandGesture.NONE }
             gestures.forEach { gesture ->
@@ -232,21 +183,14 @@ private fun GestureGuideCard() {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = gesture.displayName,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.weight(0.4f)
-                    )
-                    Text(
-                        text = gesture.description,
-                        fontSize = 12.sp,
+                    Text(text = gesture.displayName, fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium, modifier = Modifier.weight(0.4f))
+                    Text(text = gesture.description, fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(0.6f)
-                    )
+                        modifier = Modifier.weight(0.6f))
                 }
                 if (gesture != gestures.last()) {
-                    HorizontalDivider(
+                    Divider(
                         modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
                     )
