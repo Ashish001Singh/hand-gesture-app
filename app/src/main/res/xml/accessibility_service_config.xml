@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Accessibility Service Configuration for HandsFree Control.
+
+    Key attributes:
+    - canPerformGestures: Enables dispatchGesture() for scroll/swipe/tap
+    - feedbackGeneric: Required but we don't provide audible feedback
+    - notificationTimeout: Minimum time between events (we don't use events)
+    - description: Shown to user in Accessibility settings
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.handsfree.control.MainActivity" />

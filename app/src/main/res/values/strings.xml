@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HandsFree Control</string>
+
+    <string name="accessibility_service_description">
+        HandsFree Control uses the front camera to detect hand gestures
+        and converts them into touch actions like scrolling, swiping,
+        and tapping. This allows you to control apps like Instagram,
+        YouTube, and Chrome without touching the screen.\n\n
+        The service needs accessibility access to perform gestures
+        on your behalf across all apps.
+    </string>
+</resources>
